@@ -142,6 +142,8 @@ def render_result(result: AnalysisResult, color: bool = True, explain: bool = Tr
     lines.append(_c("РЕКОМЕНДУЕМЫЕ ДЕЙСТВИЯ", "bold", color))
     for action in result.actions:
         lines.append("  • %s%s" % (action, _action_comment(action)))
+    if result.actions != ["ничего не делать"]:
+        lines.append("  (выполнить действие: запустите с флагом --apply)")
 
     if result.warnings:
         lines.append("")

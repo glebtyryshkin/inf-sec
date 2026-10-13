@@ -364,8 +364,10 @@ class ExpertSystem:
                 questions.extend(rule.soft_questions)
 
         # правило/признак «ручная проверка» (например, возможная гостайна)
+        manual_actions: List[str] = []
         for rule in self.rules:
             if rule.verdict == "ручная_проверка" and rule.rid in fired:
+                manual_actions.append(rule.action)
                 item = ManualReviewItem(
                     rule_id=rule.rid,
                     title=rule.title,
@@ -435,8 +437,22 @@ class ExpertSystem:
                    "по наиболее строгому режиму." % "; ".join(laws))
             warnings_list.append(msg)
 
-        # приоритетное действие
-        actions = _priority_actions(violations)
+        # приоритетное действие: нарушение > предписание правила «ручная проверка»
+        # > предупредительное маскирование (гипотеза или нехватка данных)
+        # > ничего не делать (нарушений нет)
+        actions = _priority_actions(
+            violations,
+            lawful=lawful,
+            manual_actions=manual_actions,
+            possible_violations=possible_violations,
+            manual_reviews=manual_reviews,
+        )
+        if actions == ["маскировать"] and not violations:
+            precaution = ("Нарушение не подтверждено, но и безопасность не доказана: "
+                          "рекомендовано предупредительное маскирование прямых "
+                          "идентификаторов до завершения проверки.")
+            if precaution not in warnings_list:
+                warnings_list.append(precaution)
 
         # вердикт и уверенность
         if violations:
@@ -520,15 +536,36 @@ def _unique_laws(violations: Sequence[Conclusion]) -> List[str]:
     return laws
 
 
-def _priority_actions(violations: Sequence[Conclusion]) -> List[str]:
+def _priority_actions(violations: Sequence[Conclusion],
+                      lawful: Sequence[Conclusion] = (),
+                      manual_actions: Sequence[str] = (),
+                      possible_violations: Sequence[ManualReviewItem] = (),
+                      manual_reviews: Sequence[ManualReviewItem] = ()) -> List[str]:
+    """Выбрать действие по наиболее строгому режиму.
+
+    Приоритет: нарушение → предписание правила «ручная проверка» (например,
+    возможная государственная тайна) → предупредительное маскирование, если
+    есть гипотеза нарушения или не хватает данных → «ничего не делать», если
+    нарушения не выявлены и данных достаточно.
+    """
     order = {"удалить": 3, "маскировать": 2, "ничего не делать": 1}
-    if not violations:
+    candidates = [v.action for v in violations]
+    if not candidates:
+        # законное исключение тоже может предписывать действие (например,
+        # R-23: обезличенные данные разрешено обрабатывать только в маске)
+        candidates = [c.action for c in lawful if c.action != "ничего не делать"]
+    if not candidates:
+        candidates = [a for a in manual_actions if a != "ничего не делать"]
+    if not candidates and (possible_violations or manual_reviews):
+        # безопасность не доказана: до выяснения обстоятельств данные
+        # обрабатываются только в маскированном виде
+        candidates = ["маскировать"]
+    if not candidates:
         return ["ничего не делать"]
-    best = max(order.get(v.action, 1) for v in violations)
-    actions = [a for a, rank in order.items() if rank == best]
+    best = max(order.get(a, 1) for a in candidates)
     if best == 1:
         return ["ничего не делать"]
-    return actions
+    return [a for a, rank in order.items() if rank == best]
 
 
 def _entities_line(ex: Extraction) -> str:

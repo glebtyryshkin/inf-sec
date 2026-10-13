@@ -28,8 +28,8 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from privacy_expert import (EXIT_ERROR, ExpertSystem, SecurityLogger, __version__,
-                            render_result)
+from privacy_expert import (ACTION_NONE, EXIT_ERROR, ActionApplier, ExpertSystem,
+                            SecurityLogger, __version__, render_result)
 from privacy_expert.errors import ExpertSystemError, InputFileNotFound
 from privacy_expert.engine import VERDICT_MANUAL, VERDICT_SAFE, VERDICT_VIOLATION
 
@@ -85,6 +85,23 @@ def print_result(result, color: bool, explain: bool, as_json: bool) -> None:
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
     else:
         print(render_result(result, color=color, explain=explain))
+
+
+def print_application(applied, color: bool, as_json: bool) -> None:
+    """Показать, что именно сделала программа в режиме --apply."""
+    if as_json:
+        print(json.dumps({"applied": applied.as_dict()}, ensure_ascii=False, indent=2))
+        return
+    def paint(text, code):
+        return "\033[%sm%s\033[0m" % (code, text) if color else text
+    print()
+    print(paint("ПРИМЕНЕНИЕ ДЕЙСТВИЯ", "1"))
+    print("  Действие : %s" % applied.action)
+    print("  Результат: %s" % applied.note)
+    if applied.written and applied.path:
+        print("  Файл     : %s (%d байт)" % (applied.path, applied.bytes_written))
+    if applied.backup_path:
+        print("  Резервная копия: %s" % applied.backup_path)
 
 
 def print_error(error: ExpertSystemError) -> None:
@@ -202,6 +219,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-color", action="store_true",
                         help="включить цветной вывод даже при перенаправлении в файл")
     parser.add_argument("--brief", action="store_true", help="без подробных объяснений")
+    parser.add_argument("--apply", action="store_true",
+                        help="выполнить рекомендованное действие: «удалить» — заменить текст "
+                             "пометкой [удалено], «маскировать» — сохранить маскированную копию")
+    parser.add_argument("--out", help="куда записать результат действия (по умолчанию "
+                                      "<имя файла>.applied.<расширение>)")
+    parser.add_argument("--in-place", action="store_true",
+                        help="перезаписать исходный файл (только вместе с --file; создаётся "
+                             "резервная копия .bak)")
+    parser.add_argument("--no-backup", action="store_true",
+                        help="не создавать резервную копию при --in-place")
+    parser.add_argument("--no-header", action="store_true",
+                        help="не добавлять служебную шапку с причиной обработки")
     parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
     return parser
 
@@ -210,6 +239,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     color = (not args.no_color) and (sys.stdout.isatty() or args.force_color)
+
+    if args.in_place and not args.file:
+        print("[ОШИБКА] Флаг --in-place применим только вместе с --file: перезаписывать "
+              "нечего.", file=sys.stderr)
+        return EXIT_ERROR
+    if args.out and not args.apply:
+        print("[ОШИБКА] Флаг --out имеет смысл только вместе с --apply.", file=sys.stderr)
+        return EXIT_ERROR
 
     logger = SecurityLogger(args.log, enabled=not args.no_log, log_safe=args.log_all)
     system = ExpertSystem(logger=logger)
@@ -227,6 +264,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             text, source = read_interactive(), "cli:stdin"
         result = system.analyze(text, source=source)
         print_result(result, color, not args.brief, args.json)
+
+        if args.apply:
+            applier = ActionApplier(in_place=args.in_place, header=not args.no_header,
+                                    backup=not args.no_backup)
+            applied = applier.apply(result, text, out_path=args.out,
+                                    source_path=args.file)
+            print_application(applied, color, args.json)
         return result.exit_code
     except ExpertSystemError as error:
         print_error(error)

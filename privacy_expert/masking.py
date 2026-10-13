@@ -82,11 +82,26 @@ RULES: List[MaskRule] = [
 
 def mask_text(text: str, limit: int = 200, ellipsis: str = "…") -> str:
     """Вернуть частично замаскированный фрагмент текста для журнала."""
+def mask_document(text: str) -> str:
+    """Полностью замаскировать прямые идентификаторы, сохранив структуру текста.
+
+    В отличие от :func:`mask_text` (журнальная строка) здесь НЕ сжимаются пробелы
+    и НЕ обрезается длина: результат пригоден для записи в файл вместо исходного
+    документа — переносы строк, отступы и объём текста сохраняются.
+    """
     if not text:
         return ""
-    masked = text.strip()
+    masked = text
     for pattern, repl in RULES:
         masked = pattern.sub(repl, masked)
+    return masked
+
+
+def mask_text(text: str, limit: int = 200, ellipsis: str = "…") -> str:
+    """Вернуть частично замаскированный фрагмент текста для журнала."""
+    if not text:
+        return ""
+    masked = mask_document(text.strip())
     masked = re.sub(r"\s+", " ", masked)
     if len(masked) > limit:
         masked = masked[:limit].rstrip() + ellipsis
@@ -98,4 +113,4 @@ def mask_entities(values: List[str]) -> List[str]:
     return [mask_text(v, limit=60) for v in values]
 
 
-__all__ = ["mask_text", "mask_entities", "RULES"]
+__all__ = ["mask_text", "mask_document", "mask_entities", "RULES"]

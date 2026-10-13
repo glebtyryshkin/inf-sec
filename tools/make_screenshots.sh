@@ -98,7 +98,32 @@ capture shot_08_log "cat security_log.txt" cat security_log.txt
 render shot_08_log
 rm -f security_log.txt
 
-echo "== 9. Обработка исключений: файл не найден и пустой текст =="
+echo "== 9. Выполнение действия «удалить» (--apply) =="
+rm -f samples/case_17_pdn_s_identifikatorami.applied.txt
+{
+  echo "\$ python main.py --file samples/case_17_pdn_s_identifikatorami.txt --apply --brief --no-log"
+  "$PYTHON" main.py --file samples/case_17_pdn_s_identifikatorami.txt --apply --brief \
+      --no-log --no-color 2>&1 || true
+  echo
+  echo "\$ cat samples/case_17_pdn_s_identifikatorami.applied.txt"
+  cat samples/case_17_pdn_s_identifikatorami.applied.txt 2>/dev/null || true
+} > "$RAW/shot_10_apply_delete.txt"
+render shot_10_apply_delete
+rm -f samples/case_17_pdn_s_identifikatorami.applied.txt
+
+echo "== 10. Выполнение действия «маскировать» (--apply) =="
+rm -f /tmp/lab2_masked.txt
+{
+  echo "\$ python main.py --file samples/case_19_pdn_identifikatory.txt --apply --out /tmp/lab2_masked.txt --brief --no-log"
+  "$PYTHON" main.py --file samples/case_19_pdn_identifikatory.txt --apply \
+      --out /tmp/lab2_masked.txt --brief --no-log --no-color 2>&1 || true
+  echo
+  echo "\$ cat /tmp/lab2_masked.txt"
+  cat /tmp/lab2_masked.txt 2>/dev/null || true
+} > "$RAW/shot_11_apply_mask.txt"
+render shot_11_apply_mask
+
+echo "== 11. Обработка исключений: файл не найден и пустой текст =="
 {
   echo "\$ python main.py --file /tmp/net-takogo-fajla.txt --no-log"
   "$PYTHON" main.py --file /tmp/net-takogo-fajla.txt --no-log --no-color 2>&1 || true

@@ -21,10 +21,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import main as cli                                            # noqa: E402
-from privacy_expert import (ExpertSystem, SecurityLogger, mask_text,  # noqa: E402
-                            render_result)
+from privacy_expert import (ActionApplier, ExpertSystem, SecurityLogger,  # noqa: E402
+                            mask_document, mask_text, render_result)
 from privacy_expert.engine import (VERDICT_MANUAL, VERDICT_SAFE,  # noqa: E402
                                    VERDICT_VIOLATION)
+from privacy_expert.actions import DELETE_MARK                      # noqa: E402
 from privacy_expert.errors import EmptyInputError, InputFileNotFound  # noqa: E402
 from privacy_expert.logger import LEVEL_MANUAL, LEVEL_VIOLATION       # noqa: E402
 from privacy_expert.rules import build_rule_base                      # noqa: E402
@@ -406,6 +407,135 @@ class TestReportRendering(unittest.TestCase):
         self.assertIn("395-1", text)
         self.assertIn("РЕКОМЕНДУЕМЫЕ ДЕЙСТВИЯ", text)
         self.assertIn("ВЕРДИКТ", text)
+
+
+class TestApplyAction(unittest.TestCase):
+    """Режим --apply: система не только рекомендует действие, но и выполняет его."""
+
+    PDN_TEXT = ("Клиент Иванов И. И., телефон +7 913 555-35-35, "
+                "счёт 40817810000001234567.\n\nХранится в общей папке отдела.\n")
+    VIOLATION_TEXT = "Сотрудник ФНС передал данные о налоговых платежах компании её конкуренту.\n"
+    LAWFUL_TEXT = "Клиент дал письменное согласие на передачу его данных третьему лицу.\n"
+
+    def setUp(self) -> None:
+        self.system = ExpertSystem()
+
+    def _write(self, directory: str, name: str, text: str) -> str:
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def test_delete_replaces_text_with_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "case.txt", self.VIOLATION_TEXT)
+            result = self.system.analyze(self.VIOLATION_TEXT, log=False)
+            self.assertEqual(["удалить"], result.actions)
+            applied = ActionApplier().apply(result, self.VIOLATION_TEXT, source_path=path)
+            self.assertTrue(applied.written)
+            with open(applied.path, encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertIn(DELETE_MARK, content)
+            self.assertNotIn("Сотрудник ФНС передал", content)
+            self.assertIn("146-ФЗ", content)
+            # исходный файл не изменяется без --in-place
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(self.VIOLATION_TEXT, handle.read())
+
+    def test_mask_saves_depersonalized_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "pdn.txt", self.PDN_TEXT)
+            result = self.system.analyze(self.PDN_TEXT, log=False)
+            self.assertEqual(["маскировать"], result.actions)
+            applied = ActionApplier().apply(result, self.PDN_TEXT, source_path=path)
+            with open(applied.path, encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertNotIn("40817810000001234567", content)
+            self.assertNotIn("+7 913 555-35-35", content)
+            self.assertNotIn("Иванов И. И.", content)
+            self.assertIn("4081", content)          # часть номера сохранена
+            self.assertIn("Ива***", content)
+            self.assertNotIn(DELETE_MARK, content)  # маскирование, а не удаление
+            self.assertIn("\n\n", content)          # структура текста сохранена
+
+    def test_nothing_action_writes_no_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "ok.txt", self.LAWFUL_TEXT)
+            result = self.system.analyze(self.LAWFUL_TEXT, log=False)
+            self.assertEqual(["ничего не делать"], result.actions)
+            applied = ActionApplier().apply(result, self.LAWFUL_TEXT, source_path=path)
+            self.assertFalse(applied.written)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "ok.applied.txt")))
+
+    def test_in_place_overwrites_and_backs_up(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "case.txt", self.VIOLATION_TEXT)
+            result = self.system.analyze(self.VIOLATION_TEXT, log=False)
+            applied = ActionApplier(in_place=True).apply(result, self.VIOLATION_TEXT,
+                                                         source_path=path)
+            self.assertEqual(path, applied.path)
+            self.assertTrue(applied.backup_path and os.path.exists(applied.backup_path))
+            with open(path, encoding="utf-8") as handle:
+                self.assertIn(DELETE_MARK, handle.read())
+            with open(applied.backup_path, encoding="utf-8") as handle:
+                self.assertEqual(self.VIOLATION_TEXT, handle.read())
+
+    def test_explicit_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "custom", "result.txt")
+            result = self.system.analyze(self.VIOLATION_TEXT, log=False)
+            applied = ActionApplier().apply(result, self.VIOLATION_TEXT, out_path=out)
+            self.assertEqual(out, applied.path)
+            self.assertTrue(os.path.exists(out))
+
+    def test_cli_apply_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "case.txt", self.VIOLATION_TEXT)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--file", path, "--apply", "--no-log", "--no-color"])
+            self.assertEqual(2, code)
+            self.assertIn("ПРИМЕНЕНИЕ ДЕЙСТВИЯ", buffer.getvalue())
+            self.assertTrue(os.path.exists(os.path.join(tmp, "case.applied.txt")))
+
+    def test_cli_flag_validation(self) -> None:
+        errors = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+            self.assertEqual(1, cli.main(["--text", "текст", "--in-place", "--no-log"]))
+            self.assertEqual(1, cli.main(["--text", "текст", "--out", "/tmp/x.txt", "--no-log"]))
+        self.assertIn("--in-place", errors.getvalue())
+
+    def test_mask_document_keeps_layout(self) -> None:
+        text = "Строка 1: Иванов И. И.\n\nСтрока 2: счёт 40817810000001234567\n"
+        masked = mask_document(text)
+        self.assertIn("Ива***", masked)
+        self.assertIn("4081 **** **** 4567", masked)
+        self.assertEqual(text.count("\n"), masked.count("\n"))
+
+
+class TestActionCoverage(unittest.TestCase):
+    """Все три действия из методички должны быть достижимы."""
+
+    def test_rule_base_uses_all_three_actions(self) -> None:
+        actions = {rule.action for rule in build_rule_base()}
+        self.assertEqual({"удалить", "маскировать", "ничего не делать"}, actions)
+
+    def test_depersonalized_data_is_lawful_and_masked(self) -> None:
+        result = ExpertSystem().analyze(
+            "Передаю обезличенные данные клиентов для аналитики.", log=False)
+        self.assertEqual(VERDICT_SAFE, result.verdict)
+        self.assertEqual(["маскировать"], result.actions)
+        self.assertTrue(any(c.rule_id == "R-23" for c in result.lawful))
+
+    def test_unknown_category_recommends_precautionary_masking(self) -> None:
+        result = ExpertSystem().analyze("Обсудили с коллегой рабочие вопросы.", log=False)
+        self.assertEqual(VERDICT_MANUAL, result.verdict)
+        self.assertEqual(["маскировать"], result.actions)
+
+    def test_state_secret_requires_deletion(self) -> None:
+        result = ExpertSystem().analyze(
+            "Дружище, я видел, как разворачивают пусковую установку, фотку скину.", log=False)
+        self.assertEqual(["удалить"], result.actions)
 
 
 if __name__ == "__main__":
